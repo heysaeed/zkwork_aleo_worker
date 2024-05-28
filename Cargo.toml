@@ -15,13 +15,16 @@ license = "GPL-3.0"
 version = "1.0.0"
 
 [dependencies.zkwork_aleo_protocol]
-version = "0.3.6"
+git = "https://github.com/6block/zkwork_aleo_protocol.git"
+branch = "aleo/testnet-beta"
 
 [dependencies.tracing]
 version = "0.1"
 
 [dependencies.snarkvm]
-version = "0.9.11"
+git = "https://github.com/AleoNet/snarkVM.git"
+rev = "0bd71b5"
+features = [ "console" ]
 
 [dependencies.anyhow]
 version = "1"
@@ -110,6 +113,3 @@ lto = "thin"
 incremental = true
 debug = true
 debug-assertions = true
-
-[patch.crates-io]
-snarkvm = { git = "https://github.com/AleoHQ/snarkVM.git", branch = "testnet3" }

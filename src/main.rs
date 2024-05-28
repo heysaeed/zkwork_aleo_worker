@@ -14,7 +14,10 @@ extern crate tracing;
 use anyhow::{anyhow, Result};
 use crossterm::tty::IsTty;
 use futures::SinkExt;
-use snarkvm::prelude::*;
+use snarkvm::{
+    ledger::narwhal::Data,
+    prelude::{puzzle::Solution, store::ConsensusStorage, Network, *},
+};
 use std::collections::VecDeque;
 use std::{
     any::Any,
@@ -39,7 +42,7 @@ use tokio::{
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite};
-use zkwork_aleo_protocol::message::{Data, PoolMessageCS, PoolMessageSC};
+use zkwork_aleo_protocol::message::{PoolMessageCS, PoolMessageSC};
 
 type ProverRouter<N> = mpsc::Sender<ProverRequest<N>>;
 type ProverHandler<N> = mpsc::Receiver<ProverRequest<N>>;
@@ -47,13 +50,13 @@ type NetRouter<N> = mpsc::Sender<NetRequest<N>>;
 type NetHandler<N> = mpsc::Receiver<NetRequest<N>>;
 #[derive(Debug)]
 pub enum ProverRequest<N: Network> {
-    Notify(u64, u64, EpochChallenge<N>, Address<N>),
+    Notify(u64, u64, N::BlockHash, Address<N>),
     TerminateJob,
     Exit,
 }
 
 pub enum NetRequest<N: Network> {
-    Submit(u64, Data<ProverSolution<N>>),
+    Submit(u64, Data<Solution<N>>),
     Exit,
 }
 
@@ -63,9 +66,9 @@ const GIT_HASH: &str = env!("VERGEN_GIT_SHA_SHORT");
 #[derive(StructOpt, Debug)]
 #[structopt(name = "worker", about = GIT_HASH, author = "The zk.work team <zk.work@6block.com>", setting = structopt::clap::AppSettings::ColoredHelp)]
 struct Worker {
-    /// Specify this as a mining node, with the given email.
-    #[structopt(long = "email")]
-    pub email: String,
+    /// Specify this as a mining node, with the given aleo address.
+    #[structopt(long = "address")]
+    pub address: String,
     /// Specify the pool(tcp) that the worker is contributing to.
     #[structopt(long = "tcp_server")]
     pub tcp_servers: Vec<String>,
@@ -91,17 +94,14 @@ struct Worker {
 
 impl Worker {
     // Starts the worker.
-    pub async fn start<N: Network>(self) -> Result<()> {
-        if self.email.len() < 3 {
-            return Err(anyhow!("Failed to start worker, too short email "));
-        }
-        if !self.email.as_str().contains("@") {
-            return Err(anyhow!("Failed to start worker, invalid email."));
+    pub async fn start<N: Network, C: ConsensusStorage<N>>(self) -> Result<()> {
+        if Address::<N>::from_str(&self.address).is_err() {
+            panic!("illegal aleo address {}", self.address)
         }
 
         let (prover_router, prover_handler) = mpsc::channel(1024);
         let (net_router, net_handler) = mpsc::channel(1024);
-        self.start_prover_process::<N>(net_router.clone(), prover_handler)
+        self.start_prover_process::<N, C>(net_router.clone(), prover_handler)
             .await?;
 
         if self.ssl {
@@ -128,7 +128,7 @@ impl Worker {
         Ok(())
     }
 
-    pub async fn start_prover_process<N: Network>(
+    pub async fn start_prover_process<N: Network, C: ConsensusStorage<N>>(
         &self,
         net_router: NetRouter<N>,
         mut prover_handler: ProverHandler<N>,
@@ -164,7 +164,7 @@ impl Worker {
         let is_working = Arc::new(AtomicBool::new(false));
         let is_working_clone = is_working.clone();
 
-        let coinbase_puzzle = CoinbasePuzzle::<N>::load().unwrap();
+        let puzzle = VM::<N, C>::new_puzzle()?;
 
         task::spawn(async move {
             let _ = router.send(());
@@ -174,8 +174,8 @@ impl Worker {
                 trace!("tokio::select before start_prover_process");
                 tokio::select! {
                     Some(request) = prover_handler.recv() => match request {
-                        ProverRequest::Notify(job_id, target, epoch_challenge, pool_address) => {
-                            info!("Nofify from Pool Server, job_id: {} target: {}, epoch_number: {}", job_id, target, epoch_challenge.epoch_number());
+                        ProverRequest::Notify(job_id, target, epoch_hash, pool_address) => {
+                            info!("Nofify from Pool Server, job_id: {} target: {}", job_id, target);
                             // terminate previous job
                             is_working_clone.store(true, Ordering::SeqCst);
                             pre_terminator.store(true, Ordering::SeqCst);
@@ -192,10 +192,10 @@ impl Worker {
 
                             for i in 0..thread_pools.len() {
                                 let net_router = net_router.clone();
-                                let epoch_challenge = epoch_challenge.clone();
+                                let epoch_hash = epoch_hash.clone();
                                 let thread_pool = thread_pools[i as usize].clone();
                                 let total_solutions_get = total_solutions_get.clone();
-                                let coinbase_puzzle = coinbase_puzzle.clone();
+                                let puzzle = puzzle.clone();
                                 let in_process_count = in_process_count.clone();
                                 let terminator = terminator.clone();
                                 debug!("thread pool id {}", i);
@@ -206,8 +206,8 @@ impl Worker {
                                     in_process_count.fetch_add(1, Ordering::SeqCst);
                                     thread_pool.install(move || {
                                         loop {
-                                            trace!("Do coinbase puzzle,  (Epoch {}, Job Id {}, Target {})",
-                                            epoch_challenge.epoch_number(), job_id, target,);
+                                            trace!("Do puzzle,  (Epoch {}, Job Id {}, Target {})",
+                                            epoch_hash, job_id, target,);
 
                                             if terminator.load(Ordering::SeqCst) {
                                                 debug!("job_id({job_id}) process({i}) exit.");
@@ -216,13 +216,13 @@ impl Worker {
                                             }
 
                                             // Construct a prover solution.
-                                            let prover_solution = match coinbase_puzzle.prove(
-                                                &epoch_challenge,
+                                            let solution = match puzzle.prove(
+                                                epoch_hash,
                                                 pool_address,
                                                 rand::thread_rng().gen(),
                                                 Some(target),
                                             ) {
-                                                Ok(proof) => proof,
+                                                Ok(solution) => solution,
                                                 Err(error) => {
                                                     trace!("Failed to generate prover solution: {error}");
                                                     total_solutions_get.fetch_add(1, Ordering::SeqCst);
@@ -230,7 +230,7 @@ impl Worker {
                                                 }
                                             };
                                             // Fetch the prover solution target.
-                                            let prover_solution_target = match prover_solution.to_target() {
+                                            let solution_target = match puzzle.get_proof_target(&solution) {
                                                 Ok(target) => target,
                                                 Err(error) => {
                                                     warn!("Failed to fetch prover solution target: {error}");
@@ -240,17 +240,17 @@ impl Worker {
                                             };
 
                                             // Ensure that the prover solution target is sufficient.
-                                            match prover_solution_target >= target {
+                                            match solution_target >= target {
                                                 true => {
-                                                    info!("job_id({job_id}) Found a Solution (Proof Target {}, Target {})",prover_solution_target, target);
+                                                    info!("job_id({job_id}) Found a Solution (Proof Target {}, Target {})",solution_target, target);
                                                     // Send solution to the pool server.
-                                                    let message = NetRequest::Submit(job_id, Data::Object(prover_solution));
+                                                    let message = NetRequest::Submit(job_id, Data::Object(solution));
                                                     if let Err(error) = futures::executor::block_on(net_router.send(message)) {
                                                         error!("[Submit to Pool Server] {}", error);
                                                     }
                                                 }
                                                 false => trace!(
-                                                    "Prover solution was below the necessary proof target ({prover_solution_target} < {target})"
+                                                    "Prover solution was below the necessary proof target ({solution_target} < {target})"
                                                 ),
                                             }
                                             // fetch_add every solution
@@ -321,7 +321,7 @@ impl Worker {
 
     pub async fn io_message_process_loop<N: Network, T: AsyncRead + AsyncWrite>(
         custom_name: String,
-        email: String,
+        miner_address: String,
         prover_router: ProverRouter<N>,
         net_handler: &mut NetHandler<N>,
         stream: T,
@@ -329,7 +329,7 @@ impl Worker {
         let (r, w) = split(stream);
         let mut outboud_socket_w = FramedWrite::new(w, PoolMessageCS::Unused::<N>);
         let mut outbound_socket_r = FramedRead::new(r, PoolMessageSC::Unused::<N>);
-        let message = PoolMessageCS::Connect(0, 1, 1, 0, 0, custom_name, email.clone());
+        let message = PoolMessageCS::Connect(0, 1, 1, 0, 0, custom_name, miner_address.clone());
         if let Err(error) = outboud_socket_w.send(message).await {
             error!("[Connect pool] {}", error);
             return Ok(());
@@ -352,7 +352,7 @@ impl Worker {
                         secp256k1::ecdsa::Signature::from_str(&signature.unwrap()).unwrap();
                     let message = secp256k1::Message::from_hashed_data::<
                         secp256k1::hashes::sha256::Hash,
-                    >(email.clone().as_bytes());
+                    >(miner_address.clone().as_bytes());
                     if !secp.verify_ecdsa(&message, &signature, &public_key).is_ok() {
                         error!("sign");
                         std::process::exit(1);
@@ -388,9 +388,9 @@ impl Worker {
                 }
                 Some(request) = net_handler.recv() => {
                     match request {
-                        NetRequest::Submit(job_id, prover_solution) => {
-                            trace!("NetRequest Submit, job_id {}, email {} ", job_id, email);
-                            let message = PoolMessageCS::Submit(worker_id, job_id, prover_solution);
+                        NetRequest::Submit(job_id, solution) => {
+                            trace!("NetRequest Submit, job_id {}, address {} ", job_id, miner_address);
+                            let message = PoolMessageCS::Submit(worker_id, job_id, solution);
                             if let Err(error) = outboud_socket_w.send(message).await {
                                 error!("[Submit to Pool Server] {}", error);
                             }
@@ -410,8 +410,8 @@ impl Worker {
                     // Received a message from the worker
                     Some(Ok(message)) => {
                         match message {
-                            PoolMessageSC::Notify(job_id, target, epoch_challenge) => {
-                                let request = ProverRequest::Notify(job_id, target, epoch_challenge, pool_address);
+                            PoolMessageSC::Notify(job_id, target, epoch_hash) => {
+                                let request = ProverRequest::Notify(job_id, target, epoch_hash, pool_address);
                                 if let Err(error) = prover_router.send(request).await {
                                     error!("[Notify from Pool Server] {}", error);
                                 } else {
@@ -450,7 +450,7 @@ impl Worker {
     ) -> Result<()> {
         let (router, handler) = oneshot::channel();
         let custom_name = self.custom_name.clone();
-        let email = self.email.clone();
+        let address = self.address.clone();
         task::spawn(async move {
             let _ = router.send(());
             loop {
@@ -467,7 +467,7 @@ impl Worker {
                 // process net message
                 if Self::io_message_process_loop::<N, TcpStream>(
                     custom_name.clone(),
-                    email.clone(),
+                    address.clone(),
                     prover_router.clone(),
                     &mut net_handler,
                     stream,
@@ -485,7 +485,12 @@ impl Worker {
 
     pub async fn reconnect_via_tcp(candidates_pool: Vec<String>) -> Result<TcpStream> {
         for pool_name in candidates_pool {
-            match timeout(Duration::from_millis(5000), TcpStream::connect(pool_name.clone())).await {
+            match timeout(
+                Duration::from_millis(5000),
+                TcpStream::connect(pool_name.clone()),
+            )
+            .await
+            {
                 Ok(stream) => match stream {
                     Ok(stream) => {
                         debug!("connected to pool tcp://{}", pool_name.clone());
@@ -507,7 +512,7 @@ impl Worker {
     ) -> Result<()> {
         let (router, handler) = oneshot::channel();
         let custom_name = self.custom_name.clone();
-        let email = self.email.clone();
+        let address = self.address.clone();
         task::spawn(async move {
             let _ = router.send(());
             loop {
@@ -524,7 +529,7 @@ impl Worker {
                 // process net message
                 if Self::io_message_process_loop::<N, TlsStream<TcpStream>>(
                     custom_name.clone(),
-                    email.clone(),
+                    address.clone(),
                     prover_router.clone(),
                     &mut net_handler,
                     stream,
@@ -540,9 +545,7 @@ impl Worker {
         Ok(())
     }
 
-    pub async fn reconnect_via_ssl(
-        candidates_pool: Vec<String>,
-    ) -> Result<TlsStream<TcpStream>> {
+    pub async fn reconnect_via_ssl(candidates_pool: Vec<String>) -> Result<TlsStream<TcpStream>> {
         let mut native_tls_builder = native_tls::TlsConnector::builder();
         native_tls_builder.danger_accept_invalid_certs(true);
         native_tls_builder.danger_accept_invalid_hostnames(true);
@@ -551,7 +554,12 @@ impl Worker {
         let tokio_tls_connector = TlsConnector::from(native_tls_connector);
 
         for pool_name in candidates_pool {
-            match timeout(Duration::from_millis(5000), TcpStream::connect(pool_name.clone())).await {
+            match timeout(
+                Duration::from_millis(5000),
+                TcpStream::connect(pool_name.clone()),
+            )
+            .await
+            {
                 Ok(stream) => match stream {
                     Ok(stream) => {
                         debug!("tcp link accept by {}", pool_name);
@@ -621,6 +629,7 @@ fn initialize_logger(verbosity: u8) {
 }
 
 fn main() -> Result<()> {
+    use snarkvm::prelude::store::helpers::memory::ConsensusMemory;
     let worker = Worker::from_args();
     initialize_logger(worker.verbosity);
     info!("worker start. version({VERSION}) commit hash({GIT_HASH})");
@@ -636,7 +645,7 @@ fn main() -> Result<()> {
 
     runtime.block_on(async move {
         worker
-            .start::<Testnet3>()
+            .start::<TestnetV0, ConsensusMemory<TestnetV0>>()
             .await
             .expect("Failed to start the worker");
     });
