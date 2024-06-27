@@ -23,7 +23,7 @@ version = "0.1"
 
 [dependencies.snarkvm]
 git = "https://github.com/AleoNet/snarkVM.git"
-rev = "0bd71b5"
+rev = "d170a9f"
 features = [ "console" ]
 
 [dependencies.anyhow]
