@@ -338,7 +338,7 @@ impl Worker {
             Some(Ok(message)) => match message {
                 PoolMessageSC::ConnectAck(false, _address, _worker_id, _) => {
                     error!("connect pool error, server rejected.");
-                    return Ok(());
+                    panic!("server rejected. please update prover to latest version.");
                 }
                 PoolMessageSC::ConnectAck(true, address, worker_id, signature) => {
                     let public_key = secp256k1::PublicKey::from_slice(&[
