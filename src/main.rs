@@ -230,14 +230,15 @@ impl Worker {
                                                 }
                                             };
                                             // Fetch the prover solution target.
-                                            let solution_target = match puzzle.get_proof_target(&solution) {
-                                                Ok(target) => target,
-                                                Err(error) => {
-                                                    warn!("Failed to fetch prover solution target: {error}");
-                                                    total_solutions_get.fetch_add(1, Ordering::SeqCst);
-                                                    continue;
-                                                }
-                                            };
+                                            // let solution_target = match puzzle.get_proof_target(&solution) {
+                                            //     Ok(target) => target,
+                                            //     Err(error) => {
+                                            //         warn!("Failed to fetch prover solution target: {error}");
+                                            //         total_solutions_get.fetch_add(1, Ordering::SeqCst);
+                                            //         continue;
+                                            //     }
+                                            // };
+                                            let solution_target = solution.target();
 
                                             // Ensure that the prover solution target is sufficient.
                                             match solution_target >= target {
