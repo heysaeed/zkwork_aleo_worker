@@ -3,12 +3,12 @@
 tcp_server=36.189.234.195:10003
 ssl_server=36.189.234.195:10004
 reward_address=aleo1xxx...
-./zkwork_aleo_worker --address $reward_address --tcp_server $tcp_server --verbosity 1 --parallel_num 16 --custom_name "myworker1" --threads 8
+./zkwork_aleo_worker --address $reward_address --tcp_server $tcp_server --verbosity 1 --parallel_num 16 --custom_name "myworker1" --threads 1
 ```
 ```shell
-worker 0.3.3
+worker 0.4.0
 The zk.work team <zk.work@6block.com>
-c340cda
+0ca5f69
 
 USAGE:
     zkwork_aleo_worker [FLAGS] [OPTIONS] --address <address>
@@ -29,7 +29,7 @@ OPTIONS:
                                          16]
         --verbosity <verbosity>          Specify the verbosity of the node [options: 0, 1, 2, 3] [default: 2]
 ```
-try adjusting the following parameters for best performance，--parallel_num、--threads，“parallel 12 --threads 4“ is recommended. Threads can be adjusted based on different cpus.
+Try adjusting the following parameters for best performance, `--parallel_num` and `--threads`. The recommended values are `--parallel_num 2*cpu-cores --threads 1`.
 
 # complie
 ```shell
