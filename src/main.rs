@@ -260,6 +260,7 @@ impl Worker {
                                     });
                                 });
                                 let _ = handler.await;
+                                tokio::time::sleep(Duration::from_millis(20)).await;
                             }
                         }
                         ProverRequest::TerminateJob => {
