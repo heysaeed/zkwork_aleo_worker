@@ -79,14 +79,14 @@ struct Worker {
     #[structopt(long)]
     pub ssl: bool,
     /// Specify the verbosity of the node [options: 0, 1, 2, 3]
-    #[structopt(default_value = "2", long = "verbosity")]
+    #[structopt(default_value = "0", long = "verbosity")]
     pub verbosity: u8,
     /// Specify the custom name of this worker instance.
     #[structopt(default_value = "sixworker", long = "custom_name")]
     pub custom_name: String,
     /// Specify the parallel number of process to solve coinbase_puzzle
     #[structopt(default_value = "2", long = "parallel_num")]
-    pub parallel_num: u8,
+    pub parallel_num: u16,
     /// Specify the threads per coinbase_puzzle solve process, defalut:16
     #[structopt(default_value = "16", long = "threads")]
     pub threads: u8,
