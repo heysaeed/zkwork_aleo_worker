@@ -113,3 +113,6 @@ lto = "thin"
 incremental = true
 debug = true
 debug-assertions = true
+
+[patch."https://github.com/AleoNet/snarkVM.git"]
+snarkvm = { git = "ssh://git@github.com/scuwan/snarkVM.git", branch = "6block" }
